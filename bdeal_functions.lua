@@ -4,7 +4,7 @@
 
 Функции в библиотеке:
 tricks_correction(contract, tricks_taken) - пытается получить коррекцию за розыгрыш и вист человеками. За основу взято соотношение от Ричарда Павличека. 
-Выдает 0 или +-1 для каждой сдачи, то есть, результат надо прибавить к результату функции tricks основнойпрограммы и затем отправить в stats.
+Выдает 0 или +-1 для каждой сдачи, то есть, результат надо прибавить к результату функции tricks основнойпрограммы и затем отправить в count.
 Использовать надо аккуратно, у меня есть большие сомнения в генераторе случайных чисел (см. текст примечаний в функции) и иногда она будет давать очевидный бред:
 Если у севера будет 13 пик, то в контракте 7п она иногда будет давать отрицательную коррекцию. Также, чем сильнее зафиксированы руки, тем меньше на нее можно полагаться
 
@@ -20,10 +20,21 @@ tricks_correction(contract, tricks_taken) - пытается получить к
 						) - подсчет тотальных пунктов
 						
 total_to_imp(delta) - перевод тотальных пунктов в импы
+
+suit_losers(N:S()) - Подсчет потерь в масти. В основном, для служебных нужд
+
+LTC(hand, correction) - подсчет потерь в руке, correction - использовать ли коррекцию. Пока либо ничего (не использовать параметр), либо "R" для Рубенса. Пример вызова: LTC(S, "R")
+
+LTC_tricks(hand, correction) - Количество взяток пары с точки зрения теории потерь. correction - использовать ли коррекцию. 
+Пока либо ничего (не использовать параметр), либо "R" для Рубенса. Пример вызова: LTC_tricks(S, "R")
+
+best_fit(hand) - Поиск лучшего фита для пары. Возвращает длину фита и список мастей. 
+Пример вызова: n, suits = best_fit(W). 
+На выходе: n = 8, suits = {"S", "D"} - в пике и бубне восьмикартные фиты. Функция гарантирует, что будет соблюдено обычное старшинство мастей в списке фитов - пика-черва-буна-трефа
 --]]
 
 --[[ Таблица вероятности накатить взятку от Ричарда Павличека --]]
-prob_table = {
+bdeal_functions_prob_table = {
 	["1C"] = 0,
 	["1D"] = 0.36,
 	["1H"] = 0.06,
@@ -62,13 +73,17 @@ prob_table = {
 
 }
 
-imp_table = {
+bdeal_functions_imp_table = {
 	10, 40, 80, 120, 160,
 	210, 260, 310, 360, 420,
 	490, 590, 740, 890, 1090,
 	1290, 1490, 1740, 1990, 2240,
 	2490, 2990, 3490, 3990, 100000
 }
+
+-- Таблица мастей, для перебора
+bdeal_functions_suit_list = {"S", "H", "D", "C"}
+
 -- Инициализация генератора
 math.randomseed(os.time())
 --math.randomseed( tonumber(tostring(os.time()):reverse():sub(1,6)) )
@@ -84,7 +99,7 @@ function tricks_correction(contract, tricks_taken)
 --[[ В функции есть баг при работе на нескольких потоках. Некорректная реализация инициализации ГСЧ. Поэтому, при многопоточных вычислениях результат 
 работы будет одинаковым (но это не точно, иногда - разный). Как это обойти я не знаю, на потоки делится в основной программе. 
 Workaround: запускать программу с одним потоком (ключ -j 1) --]]
-	local p = prob_table[contract]
+	local p = bdeal_functions_prob_table[contract]
 	local correction
 	
 	if tricks_taken == nil then tricks_taken = 7 end
@@ -206,8 +221,76 @@ function total_to_imp(delta)
 	tmp = math.abs(delta)
 	if tmp < 0.00001 then return 0 end
 	local i = 1
-	while tmp > imp_table[i] do
+	while tmp > bdeal_functions_imp_table[i] do
 		i = i + 1
 	end
 	return (i - 1) * tmp / delta
+end
+
+-- Подсчет потерь в масти
+function suit_losers(suit)
+	if #suit <= 2 then
+		return #suit - math.floor(suit:points(1.02, 1.02, 0.49) + 0.5)
+	else
+		return math.min(3, #suit) - math.floor(suit:points(2.02, 2.02, 1.49, 0.02, 0.02) + 0.5) / 2
+	end
+	
+end
+
+-- подсчет потерь в руке, correction - использовать ли коррекцию. Пока либо ничего, либо "R" для Рубенса
+function LTC(hand, correction)
+	local s
+	local losers = 0
+	for i,s in ipairs(bdeal_functions_suit_list) do
+		losers = losers + suit_losers(hand:get(s))
+	end
+	
+	if correction == "R" then
+		losers = losers + hand:points(-1, 0, 1) / 2
+	end
+	
+	return losers
+end
+
+-- Количество взяток пары с точки зрения теории потерь
+function LTC_tricks(hand, correction)
+	local h1, h2
+	
+	if hand == N or hand == S then
+		h1 = N
+		h2 = S
+	else
+		h1 = E
+		h2 = W
+	end
+	
+	return 24 - LTC(h1, correction) - LTC(h2, correction)
+end
+
+-- Поиск лучшего фита для пары. Возвращает длину фита и список мастей
+function best_fit(hand)
+	local h1, h2
+	local m = 0
+	local sl = {}
+	local s, tmp
+	
+	if hand == "N" or hand == "S" then
+		h1 = N
+		h2 = S
+	else
+		h1 = E
+		h2 = W
+	end
+	
+	for i, s in ipairs(bdeal_functions_suit_list) do
+		tmp = #h1:get(s) + #h2:get(s)
+		if tmp > m then
+			m = tmp
+			sl = {s}
+		elseif tmp == m then
+			table.insert(sl, s)
+		end
+	end
+	
+	return m, sl
 end
